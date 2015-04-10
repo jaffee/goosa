@@ -5,7 +5,8 @@ import (
 	fsnotify "gopkg.in/fsnotify.v1"
 	"os"
 	"os/exec"
-	"time"
+	"os/signal"
+	"syscall"
 )
 
 func check(err error) {
@@ -18,35 +19,48 @@ func main() {
 	args := os.Args[1:]
 	chng := make(chan fsnotify.Op, 1)
 	go WatchFiles(args, chng)
+	sigChan := make(chan os.Signal, 10)
+	signal.Notify(sigChan, os.Interrupt, os.Kill)
+
+	kill := make(chan int)
+	go waitAndKill(sigChan, kill)
 	for {
-		kill := make(chan int, 1)
 		go StartProc(args, kill)
-		for (<-chng & fsnotify.Write) > 0 {
+		for (<-chng & fsnotify.Write) <= 0 {
 		}
 		fmt.Println("Detected change... restarting")
 		kill <- 1
-		time.Sleep(time.Second * 2)
+		<-kill
+
 	}
+}
+
+func waitAndKill(sigChan chan os.Signal, killChan chan int) {
+	<-sigChan
+	killChan <- 1
+	<-killChan
+	os.Exit(1)
 }
 
 func StartProc(args []string, kill chan int) {
 	fmt.Println("Making a proc")
 	cmd := exec.Command(args[0], args[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	err := cmd.Start()
 	check(err)
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	check(err)
+
 	if 1 == <-kill {
 		fmt.Println("Killing process")
-		err := cmd.Process.Kill()
+		err = syscall.Kill(-pgid, syscall.SIGTERM)
 		if err != nil {
 			fmt.Printf("Error killing process: %v\n", err)
 		}
-		if !cmd.ProcessState.Exited() {
-			fmt.Printf("Not exited? kill harder")
-			cmd.Process.Kill()
-		}
+		kill <- 2
 	}
 	cmd.Wait()
 }
