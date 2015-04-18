@@ -17,13 +17,17 @@ func check(err error) {
 
 func main() {
 	args := os.Args[1:]
+	if len(args) < 1 {
+		fmt.Println("Usage: gosup <program> [args...]")
+		os.Exit(0)
+	}
 	chng := make(chan fsnotify.Op, 1)
 	go WatchFiles(args, chng)
-	sigChan := make(chan os.Signal, 10)
-	signal.Notify(sigChan, os.Interrupt, os.Kill)
+	recvSig := make(chan os.Signal, 10)
+	signal.Notify(recvSig, os.Interrupt, os.Kill)
 
 	kill := make(chan int)
-	go waitAndKill(sigChan, kill)
+	go waitAndKill(recvSig, kill)
 	for {
 		go StartProc(args, kill)
 		for (<-chng & fsnotify.Write) <= 0 {
@@ -31,12 +35,11 @@ func main() {
 		fmt.Println("Detected change... restarting")
 		kill <- 1
 		<-kill
-
 	}
 }
 
-func waitAndKill(sigChan chan os.Signal, killChan chan int) {
-	<-sigChan
+func waitAndKill(recvSig chan os.Signal, killChan chan int) {
+	<-recvSig
 	killChan <- 1
 	<-killChan
 	os.Exit(1)
